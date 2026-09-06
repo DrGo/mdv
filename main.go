@@ -404,7 +404,7 @@ func page(w http.ResponseWriter, req *http.Request, doc *markdown.Document, body
 	if title == "" {
 		title = trimExt(req.URL.Path)
 	}
-	readPage(w, title, filesNav(req.URL.Path), body)
+	readPage(w, title, filesNav(req.URL.Path), body, false)
 }
 
 // listing writes a directory index of Markdown files and subdirectories.
@@ -433,14 +433,17 @@ func listing(w http.ResponseWriter, req *http.Request, infos []fs.FileInfo) {
 		}
 		p := path.Join(base, name)
 		kind := "file"
+		mtime := ""
 		if info.IsDir() {
 			p += "/"
 			kind = "dir"
 		} else if !isMarkdown(name) {
 			continue
+		} else {
+			mtime = fmt.Sprintf(` data-mtime="%d"`, info.ModTime().Unix())
 		}
-		fmt.Fprintf(&b, `<li><a href="%s"><span class="kind">%s</span>%s</a></li>`,
-			hrefPath(p), kind, html.EscapeString(name))
+		fmt.Fprintf(&b, `<li><a href="%s"%s><span class="kind">%s</span>%s</a></li>`,
+			hrefPath(p), mtime, kind, html.EscapeString(name))
 		b.WriteByte('\n')
 	}
 	b.WriteString("</ul>\n")
@@ -448,7 +451,7 @@ func listing(w http.ResponseWriter, req *http.Request, infos []fs.FileInfo) {
 	if base == "/" {
 		title = filepath.Base(*root)
 	}
-	readPage(w, title, filesNav(base), b.String())
+	readPage(w, title, filesNav(base), b.String(), true)
 }
 
 func hrefPath(p string) string {
@@ -458,66 +461,76 @@ func hrefPath(p string) string {
 	return html.EscapeString((&url.URL{Path: p}).String())
 }
 
-// filesNav lists Markdown files and directories next to urlPath.
-func filesNav(urlPath string) string {
-	d := urlPath
-	if !strings.HasSuffix(d, "/") {
-		d = path.Dir(d)
-	}
-	if d == "" {
-		d = "/"
-	}
-	f, err := open(d)
+// mdFile is one Markdown file found while walking the served root.
+type mdFile struct {
+	href    string // URL path
+	rel     string // slash-separated path relative to root, for display and name sort
+	modTime time.Time
+}
+
+// markdownFiles walks the whole served root and returns every Markdown file,
+// skipping dot files and directories.
+func markdownFiles() []mdFile {
+	rootAbs, err := filepath.Abs(*root)
 	if err != nil {
-		return ""
+		return nil
 	}
-	infos, err := f.Readdir(-1)
-	f.Close()
-	if err != nil {
-		return ""
-	}
-	sort.Slice(infos, func(i, j int) bool {
-		if infos[i].IsDir() != infos[j].IsDir() {
-			return infos[i].IsDir()
+	var files []mdFile
+	filepath.WalkDir(rootAbs, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
-		return infos[i].Name() < infos[j].Name()
+		if p != rootAbs && strings.HasPrefix(d.Name(), ".") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() || !isMarkdown(p) {
+			return nil
+		}
+		rel, err := filepath.Rel(rootAbs, p)
+		if err != nil {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		files = append(files, mdFile{
+			href:    urlPath(rel),
+			rel:     filepath.ToSlash(rel),
+			modTime: info.ModTime(),
+		})
+		return nil
 	})
+	return files
+}
+
+// filesNav lists every Markdown file in the served tree, for the reading
+// page's file switcher. Client-side script sorts and filters it further.
+func filesNav(urlPath string) string {
+	files := markdownFiles()
+	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
 	cur := path.Clean(urlPath)
 	var b strings.Builder
-	b.WriteString(`<div class="label">Files</div>`)
-	if d != "/" {
-		parent := path.Dir(strings.TrimSuffix(d, "/"))
-		if parent != "/" {
-			parent += "/"
-		}
-		fmt.Fprintf(&b, `<a class="dir" href="%s">..</a>`, hrefPath(parent))
-	}
-	for _, info := range infos {
-		name := info.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
-		}
-		p := path.Join(d, name)
+	b.WriteString(`<div class="label">Files<button type="button" id="files-sort" title="Sort files">Name</button></div>`)
+	for _, f := range files {
 		class := ""
-		if info.IsDir() {
-			p += "/"
-			class = ` class="dir"`
-		} else if !isMarkdown(name) {
-			continue
+		if path.Clean(f.href) == cur {
+			class = ` class="current"`
 		}
-		if path.Clean(p) == cur {
-			if class == "" {
-				class = ` class="current"`
-			} else {
-				class = ` class="dir current"`
-			}
-		}
-		fmt.Fprintf(&b, `<a href="%s"%s>%s</a>`, hrefPath(p), class, html.EscapeString(name))
+		fmt.Fprintf(&b, `<a href="%s" data-mtime="%d"%s>%s</a>`,
+			hrefPath(f.href), f.modTime.Unix(), class, html.EscapeString(f.rel))
 	}
 	return b.String()
 }
 
-func readPage(w http.ResponseWriter, title, files, body string) {
+func readPage(w http.ResponseWriter, title, files, body string, listing bool) {
+	bodyAttr := ""
+	if listing {
+		bodyAttr = ` data-listing="1"`
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
@@ -532,12 +545,16 @@ func readPage(w http.ResponseWriter, title, files, body string) {
 <style>
 %s</style>
 </head>
-<body>
+<body%s>
 <div id="progress"><i></i></div>
 <header id="top">
 <a class="brand" href="/">mdv</a>
 <div class="crumb">%s</div>
 <div id="tools">
+<button type="button" id="files-toggle" title="Show/hide files">Files</button>
+<button type="button" id="nav-prev" title="Previous file">&larr;</button>
+<button type="button" id="nav-next" title="Next file">&rarr;</button>
+<div class="rule"></div>
 <button type="button" id="font-dec" title="Smaller type">A−</button>
 <button type="button" id="font-inc" title="Larger type">A+</button>
 <div class="rule"></div>
@@ -560,7 +577,7 @@ func readPage(w http.ResponseWriter, title, files, body string) {
 %s</script>
 </body>
 </html>
-`, html.EscapeString(title), readCSS, html.EscapeString(title), files, body, readJS)
+`, html.EscapeString(title), readCSS, bodyAttr, html.EscapeString(title), files, body, readJS)
 }
 
 // openBrowser opens u in the user's web browser.

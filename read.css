@@ -184,6 +184,13 @@ html, body {
 	margin: 0 0.25rem;
 }
 
+#tools button:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+
+#tools button:disabled:hover { color: var(--secondary); background: transparent; }
+
 #tools .swatch {
 	width: 1.15rem;
 	height: 1.15rem;
@@ -234,6 +241,32 @@ html, body {
 	color: var(--muted);
 	padding: 0.25rem 0.5rem 0.5rem;
 }
+
+#files .label {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+}
+
+#files .label button {
+	appearance: none;
+	border: 1px solid var(--border);
+	background: var(--bg);
+	color: var(--muted);
+	font-family: var(--ui-font);
+	font-size: 0.625rem;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	text-transform: none;
+	padding: 0.15rem 0.4rem;
+	border-radius: 0.25rem;
+	cursor: pointer;
+}
+
+#files .label button:hover { color: var(--accent); }
+
+body.files-hidden #files { display: none; }
 
 #files a, #toc a {
 	display: block;

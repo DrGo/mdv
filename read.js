@@ -30,6 +30,20 @@ function set(k, v) {
 	try { localStorage.setItem("mdweb-" + k, v); } catch (e) {}
 }
 
+// A directory listing page auto-opens its top file (by the saved sort
+// order) so loading mdv drops straight into reading, not a bare index.
+if (document.body.dataset.listing) {
+	var indexLinks = Array.prototype.slice.call(document.querySelectorAll(".index a[data-mtime]"));
+	if (indexLinks.length) {
+		if (get("filesort", "name") == "recent") {
+			indexLinks.sort(function(a, b) {
+				return (parseInt(b.dataset.mtime, 10) || 0) - (parseInt(a.dataset.mtime, 10) || 0);
+			});
+		}
+		location.replace(indexLinks[0].getAttribute("href"));
+	}
+}
+
 function applyTheme(name) {
 	html.classList.remove("light", "sepia", "dark");
 	if (name == "system" || name == "") {
@@ -84,6 +98,72 @@ document.getElementById("measure").onclick = function() {
 	measure = applyMeasure((measure + 1) % measures.length);
 	set("measure", String(measure));
 };
+
+var filesNav = document.getElementById("files");
+
+var filesHidden = get("fileshidden", "0") == "1";
+function applyFilesHidden() {
+	document.body.classList.toggle("files-hidden", filesHidden);
+}
+applyFilesHidden();
+var filesToggle = document.getElementById("files-toggle");
+if (filesToggle) {
+	filesToggle.onclick = function() {
+		filesHidden = !filesHidden;
+		set("fileshidden", filesHidden ? "1" : "0");
+		applyFilesHidden();
+	};
+}
+
+function updateNavButtons() {
+	var prevBtn = document.getElementById("nav-prev");
+	var nextBtn = document.getElementById("nav-next");
+	if (!prevBtn || !nextBtn)
+		return;
+	var links = filesNav ? Array.prototype.slice.call(filesNav.querySelectorAll("a")) : [];
+	var at = -1;
+	for (var i = 0; i < links.length; i++) {
+		if (links[i].classList.contains("current"))
+			at = i;
+	}
+	var prevLink = at > 0 ? links[at - 1] : null;
+	var nextLink = at >= 0 && at < links.length - 1 ? links[at + 1] : null;
+	prevBtn.disabled = !prevLink;
+	nextBtn.disabled = !nextLink;
+	prevBtn.onclick = prevLink ? function() { location.href = prevLink.getAttribute("href"); } : null;
+	nextBtn.onclick = nextLink ? function() { location.href = nextLink.getAttribute("href"); } : null;
+}
+
+function sortFiles(mode) {
+	if (!filesNav)
+		return;
+	var links = Array.prototype.slice.call(filesNav.querySelectorAll("a"));
+	links.sort(function(a, b) {
+		if (mode == "recent")
+			return (parseInt(b.dataset.mtime, 10) || 0) - (parseInt(a.dataset.mtime, 10) || 0);
+		return a.textContent.localeCompare(b.textContent);
+	});
+	for (var i = 0; i < links.length; i++)
+		filesNav.appendChild(links[i]);
+	updateNavButtons();
+}
+
+var filesSort = get("filesort", "name");
+var filesSortBtn = document.getElementById("files-sort");
+function applyFilesSortLabel() {
+	if (filesSortBtn)
+		filesSortBtn.textContent = filesSort == "recent" ? "Recent" : "Name";
+}
+applyFilesSortLabel();
+sortFiles(filesSort);
+if (filesSortBtn) {
+	filesSortBtn.onclick = function() {
+		filesSort = filesSort == "recent" ? "name" : "recent";
+		set("filesort", filesSort);
+		applyFilesSortLabel();
+		sortFiles(filesSort);
+	};
+}
 
 if (toc && article) {
 	var heads = article.querySelectorAll("h1, h2, h3");

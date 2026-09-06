@@ -45,6 +45,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -218,7 +219,7 @@ func md(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if !strings.HasSuffix(req.URL.Path, ".md") {
+	if !isMarkdown(req.URL.Path) {
 		serveDir(w, req)
 		return
 	}
@@ -262,6 +263,7 @@ func md(w http.ResponseWriter, req *http.Request) {
 		SmartQuote:    true,
 	}
 	doc := p.Parse(string(data))
+	setHeadingIDs(doc)
 	body := markdown.ToHTML(doc)
 	if isTalk(req.URL.Path) {
 		slides(w, req, doc, body)
@@ -303,9 +305,65 @@ func serveDir(w http.ResponseWriter, req *http.Request) {
 	listing(w, req, infos)
 }
 
-// isTalk reports whether path names a slide presentation.
-func isTalk(path string) bool {
-	return strings.HasSuffix(path, "-talk.md")
+// markdownExts are the file extensions served as rendered Markdown.
+var markdownExts = []string{".md", ".markdown", ".mdown", ".mkd", ".mkdn"}
+
+// isMarkdown reports whether p names a Markdown file.
+func isMarkdown(p string) bool {
+	return slices.Contains(markdownExts, strings.ToLower(path.Ext(p)))
+}
+
+// trimExt removes the extension from the base name of p.
+func trimExt(p string) string {
+	base := path.Base(p)
+	return strings.TrimSuffix(base, path.Ext(base))
+}
+
+// isTalk reports whether p names a slide presentation.
+func isTalk(p string) bool {
+	return strings.HasSuffix(trimExt(p), "-talk")
+}
+
+// setHeadingIDs gives each heading an HTML id, so that links to a #fragment
+// within this file or from another file land on the heading. Headings that
+// carry an explicit {#id} keep it.
+func setHeadingIDs(doc *markdown.Document) {
+	seen := make(map[string]int)
+	for _, b := range doc.Blocks {
+		h, ok := b.(*markdown.Heading)
+		if !ok {
+			continue
+		}
+		id := h.ID
+		if id == "" {
+			id = slug(textOnly(markdown.ToHTML(h)))
+		}
+		if id == "" {
+			continue
+		}
+		if n := seen[id]; n > 0 {
+			seen[id] = n + 1
+			id = fmt.Sprintf("%s-%d", id, n)
+		} else {
+			seen[id] = 1
+		}
+		h.ID = id
+	}
+}
+
+// slug turns heading text into a fragment id, the way GitHub does:
+// lowercase, spaces to hyphens, punctuation dropped.
+func slug(text string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(text) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_', r > 127:
+			b.WriteRune(r)
+		case r == ' ':
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
 }
 
 // slides writes doc's rendered HTML wrapped in the slide CSS and JavaScript,
@@ -313,7 +371,7 @@ func isTalk(path string) bool {
 func slides(w http.ResponseWriter, req *http.Request, doc *markdown.Document, body string) {
 	title := docTitle(doc)
 	if title == "" {
-		title = strings.TrimSuffix(path.Base(req.URL.Path), ".md")
+		title = trimExt(req.URL.Path)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<!DOCTYPE html>
@@ -344,7 +402,7 @@ func slides(w http.ResponseWriter, req *http.Request, doc *markdown.Document, bo
 func page(w http.ResponseWriter, req *http.Request, doc *markdown.Document, body string) {
 	title := docTitle(doc)
 	if title == "" {
-		title = strings.TrimSuffix(path.Base(req.URL.Path), ".md")
+		title = trimExt(req.URL.Path)
 	}
 	readPage(w, title, filesNav(req.URL.Path), body)
 }
@@ -378,7 +436,7 @@ func listing(w http.ResponseWriter, req *http.Request, infos []fs.FileInfo) {
 		if info.IsDir() {
 			p += "/"
 			kind = "dir"
-		} else if !strings.HasSuffix(name, ".md") {
+		} else if !isMarkdown(name) {
 			continue
 		}
 		fmt.Fprintf(&b, `<li><a href="%s"><span class="kind">%s</span>%s</a></li>`,
@@ -444,7 +502,7 @@ func filesNav(urlPath string) string {
 		if info.IsDir() {
 			p += "/"
 			class = ` class="dir"`
-		} else if !strings.HasSuffix(name, ".md") {
+		} else if !isMarkdown(name) {
 			continue
 		}
 		if path.Clean(p) == cur {

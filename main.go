@@ -404,7 +404,7 @@ func page(w http.ResponseWriter, req *http.Request, doc *markdown.Document, body
 	if title == "" {
 		title = trimExt(req.URL.Path)
 	}
-	readPage(w, title, filesNav(req.URL.Path), body, false)
+	readPage(w, title, req.URL.Path, filesNav(req.URL.Path), body, false)
 }
 
 // listing writes a directory index of Markdown files and subdirectories.
@@ -451,7 +451,7 @@ func listing(w http.ResponseWriter, req *http.Request, infos []fs.FileInfo) {
 	if base == "/" {
 		title = filepath.Base(*root)
 	}
-	readPage(w, title, filesNav(base), b.String(), true)
+	readPage(w, title, base, filesNav(base), b.String(), true)
 }
 
 func hrefPath(p string) string {
@@ -526,7 +526,7 @@ func filesNav(urlPath string) string {
 	return b.String()
 }
 
-func readPage(w http.ResponseWriter, title, files, body string, listing bool) {
+func readPage(w http.ResponseWriter, title, crumbPath, files, body string, listing bool) {
 	bodyAttr := ""
 	if listing {
 		bodyAttr = ` data-listing="1"`
@@ -577,7 +577,7 @@ func readPage(w http.ResponseWriter, title, files, body string, listing bool) {
 %s</script>
 </body>
 </html>
-`, html.EscapeString(title), readCSS, bodyAttr, html.EscapeString(title), files, body, readJS)
+`, html.EscapeString(title), readCSS, bodyAttr, html.EscapeString(crumbPath), files, body, readJS)
 }
 
 // openBrowser opens u in the user's web browser.

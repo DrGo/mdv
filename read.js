@@ -26,6 +26,14 @@ function get(k, fallback) {
 	}
 }
 
+function getRaw(k) {
+	try {
+		return localStorage.getItem("mdweb-" + k);
+	} catch (e) {
+		return null;
+	}
+}
+
 function set(k, v) {
 	try { localStorage.setItem("mdweb-" + k, v); } catch (e) {}
 }
@@ -101,7 +109,12 @@ document.getElementById("measure").onclick = function() {
 
 var filesNav = document.getElementById("files");
 
-var filesHidden = get("fileshidden", "0") == "1";
+// With no saved preference, default to hidden on narrow viewports
+// (the panel would otherwise overlay the article on first load).
+var storedFilesHidden = getRaw("fileshidden");
+var filesHidden = storedFilesHidden != null
+	? storedFilesHidden == "1"
+	: window.matchMedia("(max-width: 1023px)").matches;
 function applyFilesHidden() {
 	document.body.classList.toggle("files-hidden", filesHidden);
 }
@@ -113,6 +126,84 @@ if (filesToggle) {
 		set("fileshidden", filesHidden ? "1" : "0");
 		applyFilesHidden();
 	};
+}
+
+// Pressing "/" opens a filter box over the file list, for jumping to a
+// file by name without hunting through the panel.
+var filesSearch = null;
+if (filesNav) {
+	filesSearch = document.createElement("input");
+	filesSearch.type = "text";
+	filesSearch.id = "files-search";
+	filesSearch.placeholder = "Filter files…";
+	filesSearch.autocomplete = "off";
+	filesSearch.hidden = true;
+	var filesLabel = filesNav.querySelector(".label");
+	filesNav.insertBefore(filesSearch, filesLabel ? filesLabel.nextSibling : filesNav.firstChild);
+}
+
+function filterFiles(q) {
+	if (!filesNav)
+		return;
+	q = q.toLowerCase();
+	var links = filesNav.querySelectorAll("a");
+	for (var i = 0; i < links.length; i++) {
+		var match = q == "" || links[i].textContent.toLowerCase().indexOf(q) != -1;
+		links[i].style.display = match ? "" : "none";
+	}
+}
+
+function openFilesSearch() {
+	if (!filesSearch)
+		return;
+	if (filesHidden) {
+		filesHidden = false;
+		set("fileshidden", "0");
+		applyFilesHidden();
+	}
+	filesSearch.hidden = false;
+	filesSearch.focus();
+	filesSearch.select();
+}
+
+function closeFilesSearch() {
+	if (!filesSearch)
+		return;
+	filesSearch.value = "";
+	filterFiles("");
+	filesSearch.hidden = true;
+	filesSearch.blur();
+}
+
+if (filesSearch) {
+	filesSearch.oninput = function() {
+		filterFiles(filesSearch.value);
+	};
+	filesSearch.onkeydown = function(e) {
+		if (e.key == "Escape") {
+			e.preventDefault();
+			closeFilesSearch();
+		} else if (e.key == "Enter") {
+			e.preventDefault();
+			var links = filesNav.querySelectorAll("a");
+			for (var i = 0; i < links.length; i++) {
+				if (links[i].style.display != "none") {
+					location.href = links[i].getAttribute("href");
+					break;
+				}
+			}
+		}
+	};
+	document.addEventListener("keydown", function(e) {
+		if (e.key != "/" || e.metaKey || e.ctrlKey || e.altKey)
+			return;
+		var t = e.target;
+		var tag = t && t.tagName;
+		if (tag == "INPUT" || tag == "TEXTAREA" || (t && t.isContentEditable))
+			return;
+		e.preventDefault();
+		openFilesSearch();
+	});
 }
 
 function updateNavButtons() {
@@ -172,6 +263,16 @@ if (toc && article) {
 		label.className = "label";
 		label.textContent = "Contents";
 		toc.appendChild(label);
+
+		// A collapsible copy of the same outline, inline at the top of the
+		// article, so the outline stays reachable when the sidebar TOC is
+		// hidden (narrow viewports, print).
+		var inlineToc = document.createElement("details");
+		inlineToc.id = "toc-top";
+		var summary = document.createElement("summary");
+		summary.textContent = "Contents";
+		inlineToc.appendChild(summary);
+
 		for (var i = 0; i < heads.length; i++) {
 			var h = heads[i];
 			if (!h.id) {
@@ -181,7 +282,10 @@ if (toc && article) {
 			a.href = "#" + h.id;
 			a.textContent = h.textContent;
 			toc.appendChild(a);
+			inlineToc.appendChild(a.cloneNode(true));
 		}
+
+		heads[0].parentNode.insertBefore(inlineToc, heads[0].nextSibling);
 	}
 }
 

@@ -44,6 +44,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -226,13 +227,13 @@ func md(w http.ResponseWriter, req *http.Request) {
 
 	f, err := open(req.URL.Path)
 	if err != nil {
-		http.Error(w, "file not found", http.StatusNotFound)
+		notFoundPage(w, req)
 		return
 	}
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
-		http.Error(w, "file not found", http.StatusNotFound)
+		notFoundPage(w, req)
 		return
 	}
 	modTime := info.ModTime()
@@ -264,6 +265,7 @@ func md(w http.ResponseWriter, req *http.Request) {
 	}
 	doc := p.Parse(string(data))
 	setHeadingIDs(doc)
+	linkifyFilenames(doc, req.URL.Path)
 	body := markdown.ToHTML(doc)
 	if isTalk(req.URL.Path) {
 		slides(w, req, doc, body)
@@ -351,6 +353,154 @@ func setHeadingIDs(doc *markdown.Document) {
 	}
 }
 
+// mdFilenameRef matches a path-like mention of a Markdown file, such as
+// "other.md" or "docs/other.md", in plain prose.
+var mdFilenameRef = regexp.MustCompile(`(?i)[a-z0-9_./-]+\.(?:md|markdown|mdown|mkd|mkdn)`)
+
+// isMdRefBoundary reports whether c cannot be part of a bare filename
+// mention, and so may border one.
+func isMdRefBoundary(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return false
+	case c == '/' || c == '.' || c == '_' || c == '-':
+		return false
+	}
+	return true
+}
+
+// linkifyFilenames turns bare mentions of Markdown filenames in doc's prose
+// into links, resolved relative to curPath the same way a hand-written
+// Markdown link would resolve. Mentions that don't resolve to a real file,
+// or that already sit inside a link or code span, are left as plain text.
+func linkifyFilenames(doc *markdown.Document, curPath string) {
+	linkifyBlocks(doc.Blocks, path.Dir(curPath))
+}
+
+func linkifyBlocks(blocks []markdown.Block, dir string) {
+	for _, b := range blocks {
+		switch b := b.(type) {
+		case *markdown.Paragraph:
+			linkifyText(b.Text, dir)
+		case *markdown.Heading:
+			linkifyText(b.Text, dir)
+		case *markdown.Text:
+			linkifyText(b, dir)
+		case *markdown.List:
+			for _, item := range b.Items {
+				if it, ok := item.(*markdown.Item); ok {
+					linkifyBlocks(it.Blocks, dir)
+				}
+			}
+		case *markdown.Quote:
+			linkifyBlocks(b.Blocks, dir)
+		case *markdown.Table:
+			for _, cell := range b.Header {
+				linkifyText(cell, dir)
+			}
+			for _, row := range b.Rows {
+				for _, cell := range row {
+					linkifyText(cell, dir)
+				}
+			}
+		}
+	}
+}
+
+func linkifyText(t *markdown.Text, dir string) {
+	if t == nil {
+		return
+	}
+	t.Inline = linkifyInlines(t.Inline, dir)
+}
+
+// linkifyInlines rewrites plain text runs in place, descending into
+// formatting wrappers (bold, italic, strikethrough) but not into existing
+// links, images, or code, so a mention that is already linked or shown
+// verbatim is never rewritten.
+func linkifyInlines(in markdown.Inlines, dir string) markdown.Inlines {
+	var out markdown.Inlines
+	for _, el := range in {
+		switch el := el.(type) {
+		case *markdown.Plain:
+			out = append(out, linkifyPlain(el, dir)...)
+		case *markdown.Strong:
+			el.Inner = linkifyInlines(el.Inner, dir)
+			out = append(out, el)
+		case *markdown.Emph:
+			el.Inner = linkifyInlines(el.Inner, dir)
+			out = append(out, el)
+		case *markdown.Del:
+			el.Inner = linkifyInlines(el.Inner, dir)
+			out = append(out, el)
+		default:
+			out = append(out, el)
+		}
+	}
+	return out
+}
+
+func linkifyPlain(pl *markdown.Plain, dir string) markdown.Inlines {
+	text := pl.Text
+	locs := mdFilenameRef.FindAllStringIndex(text, -1)
+	if locs == nil {
+		return markdown.Inlines{pl}
+	}
+	var out markdown.Inlines
+	pos := 0
+	for _, loc := range locs {
+		start, end := loc[0], loc[1]
+		if start > pos && !isMdRefBoundary(text[start-1]) {
+			continue
+		}
+		// A trailing char that could extend the filename (like the ".bak" in
+		// "notes.md.bak") means this wasn't really a Markdown file mention;
+		// a trailing sentence period is dropped along with it, a known limit.
+		if end < len(text) && !isMdRefBoundary(text[end]) {
+			continue
+		}
+		token := text[start:end]
+		href, ok := resolveFileRef(token, dir)
+		if !ok {
+			continue
+		}
+		if start > pos {
+			out = append(out, &markdown.Plain{Text: text[pos:start]})
+		}
+		out = append(out, &markdown.Link{URL: href, Inner: markdown.Inlines{&markdown.Plain{Text: token}}})
+		pos = end
+	}
+	if len(out) == 0 {
+		return markdown.Inlines{pl}
+	}
+	if pos < len(text) {
+		out = append(out, &markdown.Plain{Text: text[pos:]})
+	}
+	return out
+}
+
+// resolveFileRef reports whether token names a Markdown file that exists
+// relative to dir, the same way a Markdown link's href would resolve.
+func resolveFileRef(token, dir string) (string, bool) {
+	if !isMarkdown(token) {
+		return "", false
+	}
+	target := token
+	if !strings.HasPrefix(target, "/") {
+		target = path.Join(dir, target)
+	}
+	f, err := open(target)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return token, true
+}
+
 // slug turns heading text into a fragment id, the way GitHub does:
 // lowercase, spaces to hyphens, punctuation dropped.
 func slug(text string) string {
@@ -404,7 +554,15 @@ func page(w http.ResponseWriter, req *http.Request, doc *markdown.Document, body
 	if title == "" {
 		title = trimExt(req.URL.Path)
 	}
-	readPage(w, title, req.URL.Path, filesNav(req.URL.Path), body, false)
+	readPage(w, http.StatusOK, title, req.URL.Path, filesNav(req.URL.Path), body, false)
+}
+
+// notFoundPage renders a 404 inside the normal reading-page shell, so the
+// header and files nav stay usable instead of a bare error page.
+func notFoundPage(w http.ResponseWriter, req *http.Request) {
+	body := fmt.Sprintf("<h1>File not found</h1>\n<p>No file at <code>%s</code>.</p>\n",
+		html.EscapeString(req.URL.Path))
+	readPage(w, http.StatusNotFound, "File not found", req.URL.Path, filesNav(req.URL.Path), body, false)
 }
 
 // listing writes a directory index of Markdown files and subdirectories.
@@ -451,7 +609,7 @@ func listing(w http.ResponseWriter, req *http.Request, infos []fs.FileInfo) {
 	if base == "/" {
 		title = filepath.Base(*root)
 	}
-	readPage(w, title, base, filesNav(base), b.String(), true)
+	readPage(w, http.StatusOK, title, base, filesNav(base), b.String(), true)
 }
 
 func hrefPath(p string) string {
@@ -526,12 +684,13 @@ func filesNav(urlPath string) string {
 	return b.String()
 }
 
-func readPage(w http.ResponseWriter, title, crumbPath, files, body string, listing bool) {
+func readPage(w http.ResponseWriter, status int, title, crumbPath, files, body string, listing bool) {
 	bodyAttr := ""
 	if listing {
 		bodyAttr = ` data-listing="1"`
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>

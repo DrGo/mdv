@@ -142,6 +142,24 @@ if (filesNav) {
 	filesNav.insertBefore(filesSearch, filesLabel ? filesLabel.nextSibling : filesNav.firstChild);
 }
 
+// On narrow viewports the files panel overlays the article, so opening a
+// file from it should close the panel rather than leave it covering the
+// page that was just navigated to.
+function closeFilesIfNarrow() {
+	if (window.matchMedia("(max-width: 1023px)").matches) {
+		filesHidden = true;
+		set("fileshidden", "1");
+	}
+}
+
+if (filesNav) {
+	filesNav.addEventListener("click", function(e) {
+		var a = e.target.closest && e.target.closest("a");
+		if (a)
+			closeFilesIfNarrow();
+	});
+}
+
 function filterFiles(q) {
 	if (!filesNav)
 		return;
@@ -188,6 +206,7 @@ if (filesSearch) {
 			var links = filesNav.querySelectorAll("a");
 			for (var i = 0; i < links.length; i++) {
 				if (links[i].style.display != "none") {
+					closeFilesIfNarrow();
 					location.href = links[i].getAttribute("href");
 					break;
 				}
